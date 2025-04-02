@@ -1,11 +1,29 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class tcpcss_server {
     private static final int DEFAULT_PORT = 12345;
     private static final List<ClientHandler> clients = Collections.synchronizedList(new ArrayList<>());
     private static final Map<String, ClientHandler> usernameMap = Collections.synchronizedMap(new HashMap<>());
+    private static final Map<String, FileTransferRequest> pendingTransfers = new ConcurrentHashMap<>();
+    
+    // Class to hold file transfer information
+    public static class FileTransferRequest {
+        String sender;
+        String recipient;
+        String filename;
+        long fileSize;
+        int transferPort;
+        
+        public FileTransferRequest(String sender, String recipient, String filename, long fileSize) {
+            this.sender = sender;
+            this.recipient = recipient;
+            this.filename = filename;
+            this.fileSize = fileSize;
+        }
+    }
     
     public static void main(String[] args) {
         int port = DEFAULT_PORT;
@@ -75,6 +93,13 @@ public class tcpcss_server {
         }
     }
     
+    // Get a client by username
+    public static ClientHandler getClientByUsername(String username) {
+        synchronized(usernameMap) {
+            return usernameMap.get(username);
+        }
+    }
+    
     // Remove a client from the list and map
     public static void removeClient(ClientHandler client) {
         clients.remove(client);
@@ -102,6 +127,57 @@ public class tcpcss_server {
         
         userList.append("]");
         return userList.toString();
+    }
+    
+    // Register a file transfer request
+    public static void registerFileTransfer(String sender, String recipient, String filename, long fileSize) {
+        String key = sender + "->" + recipient;
+        pendingTransfers.put(key, new FileTransferRequest(sender, recipient, filename, fileSize));
+    }
+    
+    // Get a pending file transfer
+    public static FileTransferRequest getFileTransfer(String sender, String recipient) {
+        String key = sender + "->" + recipient;
+        return pendingTransfers.get(key);
+    }
+    
+    // Remove a pending file transfer
+    public static void removeFileTransfer(String sender, String recipient) {
+        String key = sender + "->" + recipient;
+        pendingTransfers.remove(key);
+    }
+    
+    // Start a file transfer session (simulated for demo)
+    public static void startFileTransfer(FileTransferRequest request) {
+        Thread transferThread = new Thread(() -> {
+            try {
+                Thread currentThread = Thread.currentThread();
+                System.out.println("Starting new file transfer thread, thread name is " + currentThread.getName());
+                
+                // Broadcast the start of file transfer
+                String startMessage = "[Starting file transfer between " + request.sender + " and " + request.recipient + "]";
+                System.out.println(startMessage);
+                broadcast(startMessage, null);
+                
+                // Simulate file transfer time
+                Thread.sleep(2000);
+                
+                // Broadcast completion
+                String completeMessage = "[File transfer complete from " + request.sender + 
+                                       " to " + request.recipient + " " + request.filename + 
+                                       " (" + request.fileSize + " KB)]";
+                System.out.println(completeMessage);
+                broadcast(completeMessage, null);
+                
+                // Remove from pending transfers
+                removeFileTransfer(request.sender, request.recipient);
+                
+            } catch (InterruptedException e) {
+                System.out.println("File transfer interrupted: " + e.getMessage());
+            }
+        });
+        
+        transferThread.start();
     }
 }
 
@@ -180,7 +256,7 @@ class ClientHandler implements Runnable {
     
     // Handle chat commands
     private void handleCommand(String command) {
-        String[] parts = command.split("\\s+", 2);
+        String[] parts = command.split("\\s+", 3);
         String cmd = parts[0].toLowerCase();
         
         switch(cmd) {
@@ -199,6 +275,84 @@ class ClientHandler implements Runnable {
                 } catch (IOException e) {
                     System.out.println("Error closing socket: " + e.getMessage());
                 }
+                break;
+                
+            case "/sendfile":
+                // Handle file transfer request
+                if (parts.length < 3) {
+                    sendMessage("Usage: /sendfile <recipient> <filename>");
+                    return;
+                }
+                
+                String recipient = parts[1];
+                String filename = parts[2];
+                
+                // Check if recipient exists
+                ClientHandler targetClient = tcpcss_server.getClientByUsername(recipient);
+                if (targetClient == null) {
+                    sendMessage("User " + recipient + " is not online.");
+                    return;
+                }
+                
+                // For demo, we'll use a fixed file size
+                long fileSize = 5; // KB
+                
+                // Register the file transfer request
+                tcpcss_server.registerFileTransfer(username, recipient, filename, fileSize);
+                
+                // Notify all users about the file transfer request
+                String fileTransferRequest = "[File transfer initiated from " + username + 
+                                           " to " + recipient + " " + filename + " (" + fileSize + " KB)]";
+                System.out.println(fileTransferRequest);
+                tcpcss_server.broadcast(fileTransferRequest, null);
+                break;
+                
+            case "/acceptfile":
+                // Accept a file transfer
+                if (parts.length < 2) {
+                    sendMessage("Usage: /acceptfile <sender>");
+                    return;
+                }
+                
+                String sender = parts[1];
+                tcpcss_server.FileTransferRequest transfer = tcpcss_server.getFileTransfer(sender, username);
+                
+                if (transfer == null) {
+                    sendMessage("No pending file transfer from " + sender);
+                    return;
+                }
+                
+                // Notify the acceptance
+                String acceptMessage = "[File transfer accepted from " + username + " to " + sender + "]";
+                System.out.println(acceptMessage);
+                tcpcss_server.broadcast(acceptMessage, null);
+                
+                // Start the file transfer
+                tcpcss_server.startFileTransfer(transfer);
+                break;
+                
+            case "/rejectfile":
+                // Reject a file transfer
+                if (parts.length < 2) {
+                    sendMessage("Usage: /rejectfile <sender>");
+                    return;
+                }
+                
+                String rejectSender = parts[1];
+                tcpcss_server.FileTransferRequest rejectTransfer = tcpcss_server.getFileTransfer(rejectSender, username);
+                
+                if (rejectTransfer == null) {
+                    sendMessage("No pending file transfer from " + rejectSender);
+                    return;
+                }
+                
+                // Notify the rejection
+                String rejectMessage = "[File transfer rejected from " + username + " to " + rejectSender + "]";
+                System.out.println(rejectMessage);
+                tcpcss_server.broadcast(rejectMessage, null);
+                
+                // Remove the transfer request
+                tcpcss_server.removeFileTransfer(rejectSender, username);
                 break;
                 
             default:
