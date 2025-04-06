@@ -13,7 +13,6 @@ public class tcpcss_server {
     private static final ExecutorService fileTransferPool = Executors.newCachedThreadPool();
     private static final Map<Integer, ServerSocket> fileTransferSockets = new ConcurrentHashMap<>();
     
-    // Class to hold file transfer information
     public static class FileTransferRequest {
         String sender;
         String recipient;
@@ -28,14 +27,13 @@ public class tcpcss_server {
             this.filename = filename;
             this.fileSize = fileSize;
             this.checksum = checksum;
-            this.transferPort = -1; // Will be assigned when transfer is started
+            this.transferPort = -1;
         }
     }
     
     public static void main(String[] args) {
         int port = DEFAULT_PORT;
         
-        // Parse command line arguments for custom port
         if (args.length == 1) {
             try {
                 port = Integer.parseInt(args[0]);
@@ -48,7 +46,6 @@ public class tcpcss_server {
             System.out.println("Listener on port " + port);
             System.out.println("Waiting for connections...");
             
-            // Register shutdown hook to close all resources
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.out.println("Shutting down server...");
                 for (ServerSocket ss : fileTransferSockets.values()) {
@@ -62,26 +59,20 @@ public class tcpcss_server {
             }));
             
             while (true) {
-                // Accept new client connections
                 Socket clientSocket = serverSocket.accept();
                 
-                // Get current thread information
                 Thread currentThread = Thread.currentThread();
                 String threadName = currentThread.getName();
                 
-                // Display connection information
                 System.out.println("New connection, thread name is " + threadName + ", ip is: " +
                                   clientSocket.getInetAddress().getHostAddress() +
                                   ", port: " + clientSocket.getPort());
                 
-                // Create a new client handler
                 ClientHandler clientHandler = new ClientHandler(clientSocket, clients.size());
                 
-                // Add client to the list
                 System.out.println("Adding to list of sockets as " + clients.size());
                 clients.add(clientHandler);
                 
-                // Start a new thread for this client
                 Thread thread = new Thread(clientHandler);
                 thread.start();
             }
@@ -89,12 +80,10 @@ public class tcpcss_server {
             System.out.println("Server exception: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            // Ensure executor is shut down
             fileTransferPool.shutdownNow();
         }
     }
     
-    // Broadcast a message to all clients except the sender (or all if excludeClient is null)
     public static void broadcast(String message, ClientHandler excludeClient) {
         synchronized(clients) {
             for (ClientHandler client : clients) {
@@ -105,7 +94,6 @@ public class tcpcss_server {
         }
     }
     
-    // Register a username
     public static boolean registerUsername(String username, ClientHandler client) {
         synchronized(usernameMap) {
             if (usernameMap.containsKey(username)) {
@@ -116,14 +104,12 @@ public class tcpcss_server {
         }
     }
     
-    // Get a client by username
     public static ClientHandler getClientByUsername(String username) {
         synchronized(usernameMap) {
             return usernameMap.get(username);
         }
     }
     
-    // Remove a client from the list and map
     public static void removeClient(ClientHandler client) {
         clients.remove(client);
         
@@ -134,7 +120,6 @@ public class tcpcss_server {
         System.out.println("Client removed. Remaining clients: " + clients.size());
     }
     
-    // Get a list of all online users
     public static String getOnlineUsers() {
         StringBuilder userList = new StringBuilder("[Online users: ");
         
@@ -152,25 +137,21 @@ public class tcpcss_server {
         return userList.toString();
     }
     
-    // Register a file transfer request
     public static void registerFileTransfer(String sender, String recipient, String filename, 
                                           long fileSize, String checksum) {
         String key = sender + "->" + recipient;
         pendingTransfers.put(key, new FileTransferRequest(sender, recipient, filename, fileSize, checksum));
     }
     
-    // Get a pending file transfer
     public static FileTransferRequest getFileTransfer(String sender, String recipient) {
         String key = sender + "->" + recipient;
         return pendingTransfers.get(key);
     }
     
-    // Remove a pending file transfer
     public static void removeFileTransfer(String sender, String recipient) {
         String key = sender + "->" + recipient;
         FileTransferRequest request = pendingTransfers.remove(key);
         
-        // Close any associated server socket
         if (request != null && request.transferPort > 0) {
             ServerSocket ss = fileTransferSockets.remove(request.transferPort);
             if (ss != null && !ss.isClosed()) {
@@ -183,31 +164,24 @@ public class tcpcss_server {
         }
     }
     
-    // Start a file transfer session 
     public static void startFileTransfer(FileTransferRequest request) {
         try {
-            // Assign a port for this transfer
             int transferPort = findAvailablePort(DEFAULT_PORT + 1);
             request.transferPort = transferPort;
             
             System.out.println("Creating file transfer server socket on port " + transferPort);
-            // Create a server socket for this transfer
             ServerSocket transferSocket = new ServerSocket(transferPort);
             fileTransferSockets.put(transferPort, transferSocket);
             
-            // Broadcast the start of file transfer with the port information
             String startMessage = "[Starting file transfer from " + request.sender + 
                                 " to " + request.recipient + " port:" + transferPort + "]";
             System.out.println(startMessage);
             broadcast(startMessage, null);
             
-            // Start a thread to handle this file transfer
             fileTransferPool.submit(() -> {
                 try {
-                    // Set a timeout for the transfer to start
-                    transferSocket.setSoTimeout(60000); // 60 seconds timeout
+                    transferSocket.setSoTimeout(60000);
                     
-                    // Wait for both parties to connect
                     Socket senderSocket = null;
                     Socket recipientSocket = null;
                     
@@ -220,19 +194,16 @@ public class tcpcss_server {
                         recipientSocket = transferSocket.accept();
                         System.out.println("Recipient connected from: " + recipientSocket.getInetAddress());
                         
-                        // Set timeouts for the transfer
-                        senderSocket.setSoTimeout(300000); // 5 minutes for transfer
+                        senderSocket.setSoTimeout(300000);
                         recipientSocket.setSoTimeout(300000);
                         
                         System.out.println("Both parties connected. Starting data transfer...");
-                        // Start data transfer
                         transferData(senderSocket, recipientSocket, request);
                         
                     } catch (SocketTimeoutException e) {
                         System.out.println("Timeout waiting for connections: " + e.getMessage());
                         throw e;
                     } finally {
-                        // Clean up resources
                         if (senderSocket != null) {
                             try { senderSocket.close(); } catch (IOException e) {}
                         }
@@ -262,36 +233,27 @@ public class tcpcss_server {
         }
     }
     
-    // Find an available port
     private static int findAvailablePort(int startPort) {
         for (int port = startPort; port < startPort + 100; port++) {
             try (ServerSocket socket = new ServerSocket(port)) {
                 return port;
-            } catch (IOException e) {
-                // Port is in use, try the next one
-            }
+            } catch (IOException e) { }
         }
         throw new IllegalStateException("No available port found");
     }
 
-    private static void transferData(Socket senderSocket, Socket recipientSocket, 
-                                     FileTransferRequest request) throws IOException {
-        // This method creates a direct connection between sender and recipient
-        // Server monitors and logs the progress but data flows directly
-        
+    private static void transferData(Socket senderSocket, Socket recipientSocket, FileTransferRequest request) throws IOException {
         try (
             BufferedInputStream senderIn = new BufferedInputStream(senderSocket.getInputStream());
             BufferedOutputStream senderOut = new BufferedOutputStream(senderSocket.getOutputStream());
             BufferedInputStream recipientIn = new BufferedInputStream(recipientSocket.getInputStream());
             BufferedOutputStream recipientOut = new BufferedOutputStream(recipientSocket.getOutputStream())
         ) {
-            // Set up data streams
             DataInputStream senderDataIn = new DataInputStream(senderIn);
             DataOutputStream senderDataOut = new DataOutputStream(senderOut);
             DataInputStream recipientDataIn = new DataInputStream(recipientIn);
             DataOutputStream recipientDataOut = new DataOutputStream(recipientOut);
             
-            // Forward file metadata from sender to recipient
             String filename = senderDataIn.readUTF();
             long fileSize = senderDataIn.readLong();
             String checksum = senderDataIn.readUTF();
@@ -301,7 +263,6 @@ public class tcpcss_server {
             recipientDataOut.writeUTF(checksum);
             recipientDataOut.flush();
             
-            // Get recipient's response and start position
             String response = recipientDataIn.readUTF();
             senderDataOut.writeUTF(response);
             
@@ -309,12 +270,10 @@ public class tcpcss_server {
                 throw new IOException("Recipient not ready: " + response);
             }
             
-            // Forward resume position
             long startPosition = recipientDataIn.readLong();
             senderDataOut.writeLong(startPosition);
             senderDataOut.flush();
             
-            // Start transferring data
             byte[] buffer = new byte[8192];
             int bytesRead;
             long totalBytesRead = startPosition;
@@ -326,7 +285,6 @@ public class tcpcss_server {
                 
                 totalBytesRead += bytesRead;
                 
-                // Log progress every 5% or at least every 5MB
                 long progressThreshold = Math.max(fileSize / 20, 5 * 1024 * 1024);
                 if (totalBytesRead - lastProgressLog > progressThreshold) {
                     int progressPercent = (int)((totalBytesRead * 100) / fileSize);
@@ -338,7 +296,6 @@ public class tcpcss_server {
                 }
             }
             
-            // Forward final confirmation
             response = recipientDataIn.readUTF();
             senderDataOut.writeUTF(response);
             senderDataOut.flush();
@@ -367,7 +324,6 @@ class ClientHandler implements Runnable {
         this.clientID = id;
         
         try {
-            // Set up input and output streams for communication
             this.reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             this.writer = new PrintWriter(socket.getOutputStream(), true);
         } catch (IOException e) {
@@ -378,29 +334,23 @@ class ClientHandler implements Runnable {
     @Override
     public void run() {
         try {
-            // Get username from the first message
             username = reader.readLine();
             
-            // Check if username is valid and not already taken
             if (username == null || username.trim().isEmpty() || !tcpcss_server.registerUsername(username, this)) {
                 sendMessage("Username is invalid or already taken. Disconnecting.");
                 socket.close();
                 return;
             }
             
-            // Announce new user
             String joinMessage = "[" + username + "] has joined the chat.";
             System.out.println(joinMessage);
             tcpcss_server.broadcast(joinMessage, this);
             
-            // Process messages
             String inputLine;
             while (running && (inputLine = reader.readLine()) != null) {
-                // Check if it's a command
                 if (inputLine.startsWith("/")) {
                     handleCommand(inputLine);
                 } else {
-                    // Regular chat message
                     String formattedMessage = "[" + username + "] " + inputLine;
                     System.out.println(formattedMessage);
                     tcpcss_server.broadcast(formattedMessage, this);
@@ -412,7 +362,6 @@ class ClientHandler implements Runnable {
                 System.out.println("Client disconnected: " + e.getMessage());
             }
         } finally {
-            // Clean up resources when client disconnects
             try {
                 running = false;
                 socket.close();
@@ -420,7 +369,6 @@ class ClientHandler implements Runnable {
                 System.out.println("Error closing socket: " + e.getMessage());
             }
             
-            // Remove this client from the list and notify others
             tcpcss_server.removeClient(this);
             
             if (username != null) {
@@ -431,14 +379,12 @@ class ClientHandler implements Runnable {
         }
     }
     
-    // Handle chat commands
     private void handleCommand(String command) {
         String[] parts = command.split("\\s+");
         String cmd = parts[0].toLowerCase();
         
         switch(cmd) {
             case "/who":
-                // List all online users
                 System.out.println("[" + username + "] requested online users list.");
                 String userList = tcpcss_server.getOnlineUsers();
                 sendMessage(userList);
@@ -446,7 +392,6 @@ class ClientHandler implements Runnable {
                 break;
                 
             case "/quit":
-                // Client wants to disconnect
                 try {
                     running = false;
                     socket.close();
@@ -456,7 +401,6 @@ class ClientHandler implements Runnable {
                 break;
                 
             case "/sendfile":
-                // Handle file transfer request
                 if (parts.length < 3) {
                     sendMessage("Usage: /sendfile <recipient> <filename> [<filesize> <checksum>]");
                     return;
@@ -465,14 +409,12 @@ class ClientHandler implements Runnable {
                 String recipient = parts[1];
                 String filename = parts[2];
                 
-                // Check if recipient exists
                 ClientHandler targetClient = tcpcss_server.getClientByUsername(recipient);
                 if (targetClient == null) {
                     sendMessage("User " + recipient + " is not online.");
                     return;
                 }
                 
-                // Parse file size and checksum if provided
                 long fileSize = 0;
                 String checksum = "";
                 
@@ -489,10 +431,8 @@ class ClientHandler implements Runnable {
                     checksum = parts[4];
                 }
                 
-                // Register the file transfer request
                 tcpcss_server.registerFileTransfer(username, recipient, filename, fileSize, checksum);
                 
-                // Notify all users about the file transfer request
                 String fileTransferRequest = "[File transfer initiated from " + username +
                                            " to " + recipient + " " + filename + " (" + fileSize + " KB)" +
                                            (checksum.isEmpty() ? "" : " checksum:" + checksum) + "]";
@@ -501,7 +441,6 @@ class ClientHandler implements Runnable {
                 break;
                 
             case "/acceptfile":
-                // Accept a file transfer
                 if (parts.length < 2) {
                     sendMessage("Usage: /acceptfile <sender>");
                     return;
@@ -515,19 +454,16 @@ class ClientHandler implements Runnable {
                     return;
                 }
                 
-                // Notify the acceptance
                 String acceptMessage = "[File transfer accepted by " + username + 
                                      " from " + sender + " File: " + transfer.filename + 
                                      " (" + transfer.fileSize + " KB)]";
                 System.out.println(acceptMessage);
                 tcpcss_server.broadcast(acceptMessage, null);
                 
-                // Start the file transfer
                 tcpcss_server.startFileTransfer(transfer);
                 break;
                 
             case "/rejectfile":
-                // Reject a file transfer
                 if (parts.length < 2) {
                     sendMessage("Usage: /rejectfile <sender>");
                     return;
@@ -541,17 +477,14 @@ class ClientHandler implements Runnable {
                     return;
                 }
                 
-                // Notify the rejection
                 String rejectMessage = "[File transfer rejected by " + username + " from " + rejectSender + "]";
                 System.out.println(rejectMessage);
                 tcpcss_server.broadcast(rejectMessage, null);
                 
-                // Remove the transfer request
                 tcpcss_server.removeFileTransfer(rejectSender, username);
                 break;
                 
             case "/canceltransfer":
-                // Cancel any in-progress transfers
                 boolean foundAny = false;
                 
                 for (Map.Entry<String, tcpcss_server.FileTransferRequest> entry : 
@@ -576,18 +509,15 @@ class ClientHandler implements Runnable {
                 break;
                 
             default:
-                // Unknown command
                 sendMessage("Unknown command: " + cmd);
                 break;
         }
     }
     
-    // Send a message to this client
     public void sendMessage(String message) {
         writer.println(message);
     }
     
-    // Get the username of this client
     public String getUsername() {
         return username;
     }
