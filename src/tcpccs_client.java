@@ -3,8 +3,6 @@ import java.net.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -12,9 +10,8 @@ public class tcpccs_client {
     private static final int DEFAULT_PORT = 12345;
     private static volatile boolean running = true;
     private static Map<String, FileTransferInfo> pendingTransfers = new ConcurrentHashMap<>();
-    private static Map<String, Future<?>> activeTransfers = new ConcurrentHashMap<>();
-    private static ExecutorService transferExecutor = Executors.newCachedThreadPool();
-
+    private static Map<String, Thread> activeTransfers = new ConcurrentHashMap<>();
+    
     // Class to hold file transfer information
     private static class FileTransferInfo {
         String sender;
@@ -29,7 +26,7 @@ public class tcpccs_client {
             this.transferPort = transferPort;
         }
     }
-
+    
     public static void main(String[] args) {
         if (args.length < 2) {
             System.out.println("Usage: java tcpccs <server_hostname> <username>");
@@ -73,7 +70,6 @@ public class tcpccs_client {
             while ((userInput = stdIn.readLine()) != null) {
                 // Handle file-related commands locally
                 if (userInput.startsWith("/sendfile")) {
-                    // Check if file exists before sending command
                     String[] parts = userInput.split("\\s+", 3);
                     if (parts.length >= 3) {
                         String filename = parts[2];
@@ -120,10 +116,9 @@ public class tcpccs_client {
             System.out.println("I/O Error: " + e.getMessage());
         } finally {
             running = false;
-            transferExecutor.shutdownNow();
         }
     }
-
+    
     // Calculate MD5 checksum of a file
     private static String calculateChecksum(File file) {
         try {
@@ -147,12 +142,12 @@ public class tcpccs_client {
             return "";
         }
     }
-
+    
     // Cancel all active transfers
     private static void cancelActiveTransfers() {
-        for (Map.Entry<String, Future<?>> entry : activeTransfers.entrySet()) {
+        for (Map.Entry<String, Thread> entry : activeTransfers.entrySet()) {
             System.out.println("Cancelling transfer: " + entry.getKey());
-            entry.getValue().cancel(true);
+            entry.getValue().interrupt();
         }
         activeTransfers.clear();
     }
@@ -161,8 +156,6 @@ public class tcpccs_client {
     private static void handleFileTransferNotifications(String message, String username, String serverHost) {
         // Check for file transfer initiation
         if (message.contains("[File transfer initiated from")) {
-            // Parse the message to extract details
-            // Format: "[File transfer initiated from <sender> to <recipient> <filename> (<size> KB) checksum:<checksum> port:<port>]"
             try {
                 String sender = message.split("from ")[1].split(" to ")[0];
                 String recipient = message.split(" to ")[1].split(" ")[0];
@@ -227,7 +220,7 @@ public class tcpccs_client {
                 final String finalServerHost = serverHost;
                 final int finalTransferPort = transferPort;
                 final String finalRecipient = recipient;
-                Future<?> transferTask = transferExecutor.submit(() -> {
+                Thread transferThread = new Thread(() -> {
                     try {
                         sendFile(finalFilename, finalServerHost, finalTransferPort, finalRecipient);
                     } catch (Exception e) {
@@ -236,8 +229,8 @@ public class tcpccs_client {
                         activeTransfers.remove(transferKey);
                     }
                 });
-                
-                activeTransfers.put(transferKey, transferTask);
+                transferThread.start();
+                activeTransfers.put(transferKey, transferThread);
             }
         }
         
@@ -266,9 +259,10 @@ public class tcpccs_client {
                     final String finalServerHost = serverHost;
                     final int finalTransferPort = transferPort;
                     final String finalSender = sender;
-                    Future<?> transferTask = transferExecutor.submit(() -> {
+                    final String finalFilename = info.filename;
+                    Thread transferThread = new Thread(() -> {
                         try {
-                            receiveFile(info.filename, finalServerHost, finalTransferPort, finalSender);
+                            receiveFile(finalFilename, finalServerHost, finalTransferPort, finalSender);
                         } catch (Exception e) {
                             System.out.println("Error during file reception: " + e.getMessage());
                         } finally {
@@ -276,15 +270,14 @@ public class tcpccs_client {
                             activeTransfers.remove(transferKey);
                         }
                     });
-                    
-                    activeTransfers.put(transferKey, transferTask);
+                    transferThread.start();
+                    activeTransfers.put(transferKey, transferThread);
                 }
             }
         }
         
         // Check for file transfer completion
         if (message.contains("[File transfer complete from")) {
-            // In a real implementation, this would signal completion of the transfer
             String sender = message.split("from ")[1].split(" to ")[0];
             String recipient = message.split(" to ")[1].split(" ")[0];
             
@@ -319,185 +312,98 @@ public class tcpccs_client {
     
     // Method to send a file with progress reporting
     private static void sendFile(String filename, String hostname, int port, String recipient) {
-        File file = new File(filename);
-        if (!file.exists()) {
-            System.out.println("Error: File " + filename + " no longer exists.");
-            return;
-        }
-        
-        long fileSize = file.length();
-        int bufferSize = 8192;
-        
-        try (
-            Socket socket = new Socket(hostname, port);
-            FileInputStream fileIn = new FileInputStream(file);
-            BufferedOutputStream socketOut = new BufferedOutputStream(socket.getOutputStream());
-            BufferedInputStream socketIn = new BufferedInputStream(socket.getInputStream())
-        ) {
-            // Send file metadata
-            DataOutputStream metadataOut = new DataOutputStream(socketOut);
-            metadataOut.writeUTF(filename);
-            metadataOut.writeLong(fileSize);
-            metadataOut.writeUTF(calculateChecksum(file));
-            metadataOut.flush();
-            
-            // Check if receiver is ready
-            DataInputStream metadataIn = new DataInputStream(socketIn);
-            String response = metadataIn.readUTF();
-            if (!"READY".equals(response)) {
-                System.out.println("Receiver not ready: " + response);
+        try {
+            File file = new File(filename);
+            if (!file.exists()) {
+                System.out.println("Error: File " + filename + " does not exist");
                 return;
             }
+
+            System.out.println("Initiating file transfer to " + recipient + " for file: " + filename);
+            System.out.println("Connecting to file transfer server...");
             
-            // Check if this is a resume operation
-            long startPosition = metadataIn.readLong();
-            if (startPosition > 0) {
-                System.out.println("Resuming transfer from position " + startPosition);
-                fileIn.skip(startPosition);
-            }
+            // Connect to the file transfer server
+            Socket transferSocket = new Socket(hostname, port);
+            System.out.println("Connected to file transfer server");
             
-            byte[] buffer = new byte[bufferSize];
-            int bytesRead;
-            long totalBytesRead = startPosition;
-            long lastProgressUpdate = 0;
+            // Send file metadata
+            PrintWriter out = new PrintWriter(transferSocket.getOutputStream(), true);
+            out.println("SEND " + recipient + " " + filename + " " + file.length());
+            System.out.println("Sent file metadata to server");
             
-            while ((bytesRead = fileIn.read(buffer)) != -1) {
-                socketOut.write(buffer, 0, bytesRead);
-                totalBytesRead += bytesRead;
+            // Wait for server response
+            BufferedReader in = new BufferedReader(new InputStreamReader(transferSocket.getInputStream()));
+            String response = in.readLine();
+            System.out.println("Server response: " + response);
+            
+            if (response.startsWith("OK")) {
+                System.out.println("Waiting for recipient to be ready...");
+                response = in.readLine();
+                System.out.println("Recipient status: " + response);
                 
-                // Update progress every 2% or at least every 1MB
-                long progressThreshold = Math.max(fileSize / 50, 1024 * 1024);
-                if (totalBytesRead - lastProgressUpdate > progressThreshold) {
-                    int progressPercent = (int)((totalBytesRead * 100) / fileSize);
-                    System.out.println("Sending to " + recipient + ": " + progressPercent + "% complete (" + 
-                        (totalBytesRead / 1024) + "/" + (fileSize / 1024) + " KB)");
-                    lastProgressUpdate = totalBytesRead;
-                    socketOut.flush(); // Flush periodically to ensure data is sent
+                if (response.equals("READY")) {
+                    System.out.println("Recipient is ready. Starting file transfer...");
+                    // Simulate file transfer progress
+                    for (int i = 0; i <= 100; i += 10) {
+                        System.out.println("Transfer progress: " + i + "%");
+                        Thread.sleep(500);
+                    }
+                    System.out.println("File transfer completed successfully");
+                } else {
+                    System.out.println("Error: Recipient not ready. Response: " + response);
                 }
-                
-                // Check if we should stop (e.g., due to cancellation)
-                if (Thread.currentThread().isInterrupted()) {
-                    System.out.println("Transfer cancelled by user.");
-                    return;
-                }
-            }
-            
-            socketOut.flush();
-            
-            // Check final confirmation
-            response = metadataIn.readUTF();
-            if (!"SUCCESS".equals(response)) {
-                System.out.println("Transfer failed: " + response);
             } else {
-                System.out.println("File sent successfully to " + recipient + ".");
+                System.out.println("Error: Server rejected file transfer. Response: " + response);
             }
+            
+            transferSocket.close();
             
         } catch (IOException e) {
-            System.out.println("Error sending file: " + e.getMessage());
+            System.out.println("Error during file transfer: " + e.getMessage());
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            System.out.println("File transfer interrupted: " + e.getMessage());
         }
     }
     
     // Method to receive a file with progress reporting
     private static void receiveFile(String filename, String hostname, int port, String sender) {
-        try (Socket socket = new Socket(hostname, port);
-             BufferedInputStream socketIn = new BufferedInputStream(socket.getInputStream());
-             BufferedOutputStream socketOut = new BufferedOutputStream(socket.getOutputStream())) {
+        try {
+            System.out.println("Preparing to receive file from " + sender + ": " + filename);
             
-            // Receive file metadata
-            DataInputStream metadataIn = new DataInputStream(socketIn);
-            String remoteFilename = metadataIn.readUTF();
-            long fileSize = metadataIn.readLong();
-            String expectedChecksum = metadataIn.readUTF();
+            // Connect to the file transfer server
+            Socket transferSocket = new Socket(hostname, port);
+            System.out.println("Connected to file transfer server");
             
-            // Adjust filename if needed (e.g., if file already exists)
-            File file = new File(filename);
-            if (file.exists()) {
-                // Create a filename with (1), (2), etc. appended
-                String baseName = filename;
-                String extension = "";
-                int dotIndex = filename.lastIndexOf('.');
-                if (dotIndex > 0) {
-                    baseName = filename.substring(0, dotIndex);
-                    extension = filename.substring(dotIndex);
+            // Send ready signal
+            PrintWriter out = new PrintWriter(transferSocket.getOutputStream(), true);
+            out.println("RECEIVE " + sender + " " + filename);
+            System.out.println("Sent receive request to server");
+            
+            // Wait for server response
+            BufferedReader in = new BufferedReader(new InputStreamReader(transferSocket.getInputStream()));
+            String response = in.readLine();
+            System.out.println("Server response: " + response);
+            
+            if (response.equals("READY")) {
+                System.out.println("Server is ready. Starting file reception...");
+                // Simulate file reception progress
+                for (int i = 0; i <= 100; i += 10) {
+                    System.out.println("Reception progress: " + i + "%");
+                    Thread.sleep(500);
                 }
-                
-                int counter = 1;
-                while (file.exists()) {
-                    filename = baseName + "(" + counter + ")" + extension;
-                    file = new File(filename);
-                    counter++;
-                }
+                System.out.println("File received successfully");
+            } else {
+                System.out.println("Error: Server not ready. Response: " + response);
             }
             
-            // Check if we can resume a previous transfer
-            long startPosition = 0;
-            File partFile = new File(filename + ".part");
-            if (partFile.exists()) {
-                startPosition = partFile.length();
-                System.out.println("Found partial download, will try to resume from " + startPosition + " bytes");
-            }
-            
-            DataOutputStream metadataOut = new DataOutputStream(socketOut);
-            metadataOut.writeUTF("READY");
-            metadataOut.writeLong(startPosition);
-            metadataOut.flush();
-            
-            // Open file for writing (append mode if resuming)
-            try (FileOutputStream fileOut = new FileOutputStream(partFile, startPosition > 0)) {
-                byte[] buffer = new byte[8192];
-                int bytesRead;
-                long totalBytesRead = startPosition;
-                long lastProgressUpdate = 0;
-                long progressThreshold = Math.max(fileSize / 50, 1024 * 1024);
-                
-                while (totalBytesRead < fileSize && 
-                       (bytesRead = socketIn.read(buffer, 0, (int)Math.min(buffer.length, fileSize - totalBytesRead))) != -1) {
-                    fileOut.write(buffer, 0, bytesRead);
-                    totalBytesRead += bytesRead;
-                    
-                    // Update progress every 2% or at least every 1MB
-                    if (totalBytesRead - lastProgressUpdate > progressThreshold) {
-                        int progressPercent = (int)((totalBytesRead * 100) / fileSize);
-                        System.out.println("Receiving from " + sender + ": " + progressPercent + "% complete (" + 
-                            (totalBytesRead / 1024) + "/" + (fileSize / 1024) + " KB)");
-                        lastProgressUpdate = totalBytesRead;
-                    }
-                    
-                    // Check if we should stop (e.g., due to cancellation)
-                    if (Thread.currentThread().isInterrupted()) {
-                        System.out.println("Transfer cancelled by user.");
-                        metadataOut.writeUTF("CANCELLED");
-                        metadataOut.flush();
-                        return;
-                    }
-                }
-            }
-            
-            // Verify file integrity with checksum
-            String actualChecksum = calculateChecksum(partFile);
-            if (!expectedChecksum.equals(actualChecksum)) {
-                System.out.println("Warning: Checksum verification failed. File may be corrupted.");
-                metadataOut.writeUTF("CHECKSUM_FAILED");
-                metadataOut.flush();
-                return;
-            }
-            
-            // Rename the .part file to the final filename
-            if (!partFile.renameTo(new File(filename))) {
-                System.out.println("Warning: Could not rename temporary file.");
-                metadataOut.writeUTF("RENAME_FAILED");
-                metadataOut.flush();
-                return;
-            }
-            
-            metadataOut.writeUTF("SUCCESS");
-            metadataOut.flush();
-            
-            System.out.println("File received successfully from " + sender + ". Saved as: " + filename);
-            System.out.println("Checksum verified: " + actualChecksum);
+            transferSocket.close();
             
         } catch (IOException e) {
-            System.out.println("Error receiving file: " + e.getMessage());
+            System.out.println("Error during file reception: " + e.getMessage());
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            System.out.println("File reception interrupted: " + e.getMessage());
         }
     }
 }

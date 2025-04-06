@@ -190,6 +190,7 @@ public class tcpcss_server {
             int transferPort = findAvailablePort(DEFAULT_PORT + 1);
             request.transferPort = transferPort;
             
+            System.out.println("Creating file transfer server socket on port " + transferPort);
             // Create a server socket for this transfer
             ServerSocket transferSocket = new ServerSocket(transferPort);
             fileTransferSockets.put(transferPort, transferSocket);
@@ -211,11 +212,11 @@ public class tcpcss_server {
                     Socket recipientSocket = null;
                     
                     try {
-                        System.out.println("Waiting for sender to connect...");
+                        System.out.println("Waiting for sender (" + request.sender + ") to connect...");
                         senderSocket = transferSocket.accept();
                         System.out.println("Sender connected from: " + senderSocket.getInetAddress());
                         
-                        System.out.println("Waiting for recipient to connect...");
+                        System.out.println("Waiting for recipient (" + request.recipient + ") to connect...");
                         recipientSocket = transferSocket.accept();
                         System.out.println("Recipient connected from: " + recipientSocket.getInetAddress());
                         
@@ -223,6 +224,7 @@ public class tcpcss_server {
                         senderSocket.setSoTimeout(300000); // 5 minutes for transfer
                         recipientSocket.setSoTimeout(300000);
                         
+                        System.out.println("Both parties connected. Starting data transfer...");
                         // Start data transfer
                         transferData(senderSocket, recipientSocket, request);
                         
