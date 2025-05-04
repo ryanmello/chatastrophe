@@ -180,6 +180,7 @@ class HTTPHandler implements Runnable {
         if(fileName.endsWith(".jpeg") || fileName.endsWith(".jpg")) return "image/jpeg";
         if(fileName.endsWith(".png")) return "image/png";
         if(fileName.endsWith(".txt")) return "text/plain";
+        if(fileName.endsWith(".gif")) return "image/gif";
         return "application/octet-stream";
     }
 }
