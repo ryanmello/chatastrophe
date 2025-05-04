@@ -17,7 +17,7 @@ public class WebServer {
 
     private static void startHTTPServer(int port){
         try(ServerSocket serverSocket = new ServerSocket(port)){
-            System.out.println("HTTP listening on port " + port);
+            System.out.println("HTTP listening on port: " + port);
 
             while(true){
                 Socket clientSocket = serverSocket.accept();
@@ -32,12 +32,12 @@ public class WebServer {
         try {
             SSLServerSocketFactory factory = (SSLServerSocketFactory) SSLServerSocketFactory.getDefault();
             SSLServerSocket sslServerSocket = (SSLServerSocket) factory.createServerSocket(port);
-            System.out.println("HTTPS listening on port " + port);
+            System.out.println("HTTPS listening on port: " + port);
             while(true){
                 Socket clientSocket = sslServerSocket.accept();
                 new Thread(new HTTPHandler(clientSocket)).start();
             }
-        } catch (IOException e){
+        } catch(IOException e){
             System.err.println(e.getMessage());
         }
     }
